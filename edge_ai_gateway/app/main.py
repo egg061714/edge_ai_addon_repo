@@ -6,9 +6,8 @@ import os
 import paho.mqtt.client as mqtt
 from aioesphomeapi import APIClient
 
-MODEL_PATH = "/data/model.json"
-CONF_PATH = "/data/runtime_config.json"
-
+MODEL_PATH = "/share/edge_ai_gateway/model.json"
+CONF_PATH  = "/share/edge_ai_gateway/runtime_config.json"
 STATE = {
     "ewma": None,          # EWMA value
     "alarm": False,        # current alarm state
