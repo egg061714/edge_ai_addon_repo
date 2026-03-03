@@ -6,8 +6,8 @@ from typing import Optional
 import paho.mqtt.client as mqtt
 from aioesphomeapi import APIClient
 
-MODEL_PATH = "/data/model.json"
-CONF_PATH = "/data/runtime_config.json"
+MODEL_PATH = "/model.json"
+CONF_PATH = "/runtime_config.json"
 
 STATE = {
     "ewma": None,          # EWMA value
