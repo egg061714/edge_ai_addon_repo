@@ -110,7 +110,8 @@ def main():
 
     model = load_json(MODEL_PATH)
     conf  = load_json(CONF_PATH)
-
+    print(f"[MODEL] mean={model.get('mean')} std={model.get('std')} alpha={model.get('alpha')} "
+      f"z_on={model.get('z_on')} z_off={model.get('z_off')} hold={model.get('hold_seconds')}", flush=True)
     mqtt_conf = conf["mqtt"]
     broker = mqtt_conf["broker"]
     port   = int(mqtt_conf.get("port", 1883))
@@ -144,7 +145,7 @@ def main():
     c = mqtt.Client()  # DeprecationWarning 可先忽略，功能正常
     c.on_connect = on_connect
     c.on_disconnect = on_disconnect
-    c.on_log = on_log
+    # c.on_log = on_log
     c.on_message = on_message
 
     if username and password:
