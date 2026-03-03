@@ -33,6 +33,11 @@ async def get_switch_key(client: APIClient, name_contains: str) -> int:
     raise RuntimeError(f"Switch not found (name contains '{name_contains}')")
 
 async def esphome_set_switch(esph: dict, name_contains: str, turn_on: bool):
+    """
+   兼容不同 aioesphomeapi 版本：
+    - switch_command 可能是 coroutine，也可能是同步回 None
+    - disconnect 也可能是 coroutine，也可能是同步
+    """
     noise_psk: Optional[str] = esph.get("encryption_key")  # None => no encryption
 
     client = APIClient(
@@ -41,13 +46,31 @@ async def esphome_set_switch(esph: dict, name_contains: str, turn_on: bool):
         password=None,
         noise_psk=noise_psk,
     )
-    await client.connect(login=True)
 
+    # connect
+    res = client.connect(login=True)
+    if asyncio.iscoroutine(res):
+        await res
+
+    # cache switch key
     if STATE["switch_key"] is None:
         STATE["switch_key"] = await get_switch_key(client, name_contains)
 
-    await client.switch_command(STATE["switch_key"], turn_on)
-    await client.disconnect()
+    # switch command (兼容 await / non-await)
+    try:
+        res = client.switch_command(STATE["switch_key"], turn_on)
+        if asyncio.iscoroutine(res):
+            await res
+    except TypeError:
+        # 有些版本參數名可能是 state
+        res = client.switch_command(key=STATE["switch_key"], state=turn_on)
+        if asyncio.iscoroutine(res):
+            await res
+
+    # disconnect (兼容 await / non-await)
+    res = client.disconnect()
+    if asyncio.iscoroutine(res):
+        await res
 
 def infer_should_alarm(v: float, model: dict):
     alpha = float(model.get("alpha", 0.3))
@@ -60,7 +83,6 @@ def infer_should_alarm(v: float, model: dict):
     now = time.time()
     in_hold = (now - STATE["last_change"]) < hold
 
-    # EWMA
     if STATE["ewma"] is None:
         STATE["ewma"] = v
     else:
@@ -68,7 +90,6 @@ def infer_should_alarm(v: float, model: dict):
 
     z = abs((STATE["ewma"] - mu) / (std if std != 0 else 1e-6))
 
-    # hysteresis
     if STATE["alarm"]:
         should_alarm = not ((z <= z_off) and (not in_hold))
     else:
@@ -79,25 +100,29 @@ def infer_should_alarm(v: float, model: dict):
 async def handle_value(v: float, model: dict, conf: dict):
     should_alarm, z, ewma = infer_should_alarm(v, model)
 
-    # ✅ 每筆都印決策
     print(
         f"[DECISION] ppm={v:.3f} ewma={ewma:.3f} z={z:.2f} alarm={STATE['alarm']} -> {should_alarm}",
         flush=True
     )
 
-    if should_alarm != STATE["alarm"]:
+    if should_alarm == STATE["alarm"]:
+        return
+
+    esph = conf["esphome"]
+    name_contains = esph.get("switch_name_contains", "Fan Relay")
+
+    try:
+        await esphome_set_switch(esph, name_contains, should_alarm)
+
+        # ✅ 只有控制成功才更新狀態
         STATE["alarm"] = should_alarm
         STATE["last_change"] = time.time()
 
-        esph = conf["esphome"]
-        name_contains = esph.get("switch_name_contains", "Fan Relay")
+        print(f"[ACTION] alarm={should_alarm} (switch='{name_contains}')", flush=True)
 
-        try:
-            await esphome_set_switch(esph, name_contains, should_alarm)
-            print(f"[ACTION] alarm={should_alarm} (switch='{name_contains}')", flush=True)
-        except Exception as e:
-            print("[ERROR] ESPHome control failed:", repr(e), flush=True)
-            STATE["switch_key"] = None
+    except Exception as e:
+        print("[ERROR] ESPHome control failed:", repr(e), flush=True)
+        STATE["switch_key"] = None
 
 def start_async_loop():
     loop = asyncio.new_event_loop()
@@ -132,7 +157,6 @@ def main():
 
     print(f"[MQTT] broker={broker} port={port} topic={topic}", flush=True)
 
-    # ✅ 背景 asyncio loop：讓 aioesphomeapi / handle_value 真正跑起來
     loop = start_async_loop()
 
     def on_connect(client, userdata, flags, rc, *args, **kwargs):
@@ -145,7 +169,6 @@ def main():
             v = float(payload)
             print(f"[MQTT] ppm={v}", flush=True)
 
-            # ✅ thread-safe 丟 coroutine 到背景 asyncio loop
             asyncio.run_coroutine_threadsafe(handle_value(v, model, conf), loop)
 
         except Exception as e:
