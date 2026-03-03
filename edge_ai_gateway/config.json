@@ -6,7 +6,7 @@
   "startup": "services",
   "boot": "auto",
   "arch": ["aarch64", "armv7", "amd64"],
-  "map": ["addon_config"] ["share:rw"],
+  "map":["share:rw"],
   "host_network": true,
   "options": {},
   "schema": {}
