@@ -6,7 +6,7 @@ from typing import Optional
 import paho.mqtt.client as mqtt
 from aioesphomeapi import APIClient
 
-MODEL_PATH = "/model.json"
+MODEL_PATH = "/addon_configs/d3b80a61_edge_ai_gateway/model.json"
 CONF_PATH = "/runtime_config.json"
 
 STATE = {
