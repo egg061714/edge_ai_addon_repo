@@ -40,7 +40,6 @@ async def esphome_set_switch(esph: dict, name_contains: str, turn_on: bool):
         password=None,
         noise_psk=noise_psk,
     )
-
     await client.connect(login=True)
 
     if STATE["switch_key"] is None:
@@ -49,7 +48,11 @@ async def esphome_set_switch(esph: dict, name_contains: str, turn_on: bool):
     await client.switch_command(STATE["switch_key"], turn_on)
     await client.disconnect()
 
-def infer_should_alarm(v: float, model: dict) -> bool:
+def infer_should_alarm(v: float, model: dict):
+    """
+    Returns: (should_alarm, z, ewma)
+    EWMA + z-score + hysteresis + hold time.
+    """
     alpha = float(model.get("alpha", 0.2))
     mu = float(model["mean"])
     std = float(model["std"])
@@ -60,6 +63,7 @@ def infer_should_alarm(v: float, model: dict) -> bool:
     now = time.time()
     in_hold = (now - STATE["last_change"]) < hold
 
+    # EWMA update
     if STATE["ewma"] is None:
         STATE["ewma"] = v
     else:
@@ -67,18 +71,24 @@ def infer_should_alarm(v: float, model: dict) -> bool:
 
     z = abs((STATE["ewma"] - mu) / (std if std != 0 else 1e-6))
 
+    # hysteresis decision
     if STATE["alarm"]:
-        if (z <= z_off) and (not in_hold):
-            return False
-        return True
+        should_alarm = not ((z <= z_off) and (not in_hold))
     else:
-        if z >= z_on:
-            return True
-        return False
+        should_alarm = (z >= z_on)
+
+    return should_alarm, z, STATE["ewma"]
 
 async def handle_value(v: float, model: dict, conf: dict):
-    should_alarm = infer_should_alarm(v, model)
+    should_alarm, z, ewma = infer_should_alarm(v, model)
 
+    # ✅ 每筆都印決策
+    print(
+        f"[DECISION] ppm={v:.3f} ewma={ewma:.3f} z={z:.2f} alarm={STATE['alarm']} -> {should_alarm}",
+        flush=True
+    )
+
+    # 只有狀態改變才做控制
     if should_alarm != STATE["alarm"]:
         STATE["alarm"] = should_alarm
         STATE["last_change"] = time.time()
@@ -88,9 +98,10 @@ async def handle_value(v: float, model: dict, conf: dict):
 
         try:
             await esphome_set_switch(esph, name_contains, should_alarm)
-            print(f"[ACTION] alarm={should_alarm} value={v:.3f} ewma={STATE['ewma']:.3f}", flush=True)
+            print(f"[ACTION] alarm={should_alarm} (switch='{name_contains}')", flush=True)
         except Exception as e:
             print("[ERROR] ESPHome control failed:", repr(e), flush=True)
+            # 讓下次重新搜尋 switch key
             STATE["switch_key"] = None
 
 def main():
@@ -119,20 +130,18 @@ def main():
         print("[MQTT] disconnected rc=", rc, flush=True)
 
     def on_log(client, userdata, level, buf):
-        # 這會顯示連線/認證/斷線等原因（很重要）
         print("[MQTT-LOG]", buf, flush=True)
 
     def on_message(client, userdata, msg):
         try:
             payload = msg.payload.decode("utf-8", errors="ignore").strip()
-            v = float(payload)  # payload is plain number like "5.08"
+            v = float(payload)
+            print(f"[MQTT] ppm={v}", flush=True)
+            loop.create_task(handle_value(v, model, conf))
         except Exception as e:
             print("[MQTT] bad payload:", repr(e), "raw=", msg.payload[:80], flush=True)
-            return
 
-        loop.create_task(handle_value(v, model, conf))
-
-    c = mqtt.Client()  # 先不管 DeprecationWarning，先求跑通
+    c = mqtt.Client()  # DeprecationWarning 可先忽略，功能正常
     c.on_connect = on_connect
     c.on_disconnect = on_disconnect
     c.on_log = on_log
