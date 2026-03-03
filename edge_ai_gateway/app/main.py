@@ -2,7 +2,7 @@ import asyncio
 import json
 import time
 from typing import Optional
-
+import os
 import paho.mqtt.client as mqtt
 from aioesphomeapi import APIClient
 
@@ -108,6 +108,12 @@ async def handle_value(v: float, model: dict, conf: dict):
             STATE["switch_key"] = None
 
 def main():
+
+    print("[DEBUG] /data exists:", os.path.exists("/data"))
+try:
+    print("[DEBUG] /data list:", os.listdir("/data"))
+except Exception as e:
+    print("[DEBUG] /data list failed:", repr(e))
     model = load_json(MODEL_PATH)
     conf = load_json(CONF_PATH)
 

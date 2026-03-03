@@ -1,6 +1,6 @@
 {
   "name": "Edge AI Gateway",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "slug": "edge_ai_gateway",
   "description": "AI/Rule decision service controlling ESPHome devices via native API",
   "startup": "services",
