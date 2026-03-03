@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+import threading
 from typing import Optional
 
 import paho.mqtt.client as mqtt
@@ -49,21 +50,17 @@ async def esphome_set_switch(esph: dict, name_contains: str, turn_on: bool):
     await client.disconnect()
 
 def infer_should_alarm(v: float, model: dict):
-    """
-    Returns: (should_alarm, z, ewma)
-    EWMA + z-score + hysteresis + hold time.
-    """
-    alpha = float(model.get("alpha", 0.2))
+    alpha = float(model.get("alpha", 0.3))
     mu = float(model["mean"])
     std = float(model["std"])
-    z_on = float(model.get("z_on", 3.0))
-    z_off = float(model.get("z_off", 2.0))
-    hold = float(model.get("hold_seconds", 30))
+    z_on = float(model.get("z_on", 1.3))
+    z_off = float(model.get("z_off", 0.8))
+    hold = float(model.get("hold_seconds", 5))
 
     now = time.time()
     in_hold = (now - STATE["last_change"]) < hold
 
-    # EWMA update
+    # EWMA
     if STATE["ewma"] is None:
         STATE["ewma"] = v
     else:
@@ -71,7 +68,7 @@ def infer_should_alarm(v: float, model: dict):
 
     z = abs((STATE["ewma"] - mu) / (std if std != 0 else 1e-6))
 
-    # hysteresis decision
+    # hysteresis
     if STATE["alarm"]:
         should_alarm = not ((z <= z_off) and (not in_hold))
     else:
@@ -88,7 +85,6 @@ async def handle_value(v: float, model: dict, conf: dict):
         flush=True
     )
 
-    # 只有狀態改變才做控制
     if should_alarm != STATE["alarm"]:
         STATE["alarm"] = should_alarm
         STATE["last_change"] = time.time()
@@ -101,8 +97,18 @@ async def handle_value(v: float, model: dict, conf: dict):
             print(f"[ACTION] alarm={should_alarm} (switch='{name_contains}')", flush=True)
         except Exception as e:
             print("[ERROR] ESPHome control failed:", repr(e), flush=True)
-            # 讓下次重新搜尋 switch key
             STATE["switch_key"] = None
+
+def start_async_loop():
+    loop = asyncio.new_event_loop()
+
+    def runner():
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    return loop
 
 def main():
     print("[BOOT] Edge AI Gateway starting...", flush=True)
@@ -110,8 +116,13 @@ def main():
 
     model = load_json(MODEL_PATH)
     conf  = load_json(CONF_PATH)
-    print(f"[MODEL] mean={model.get('mean')} std={model.get('std')} alpha={model.get('alpha')} "
-      f"z_on={model.get('z_on')} z_off={model.get('z_off')} hold={model.get('hold_seconds')}", flush=True)
+
+    print(
+        f"[MODEL] mean={model.get('mean')} std={model.get('std')} alpha={model.get('alpha')} "
+        f"z_on={model.get('z_on')} z_off={model.get('z_off')} hold={model.get('hold_seconds')}",
+        flush=True
+    )
+
     mqtt_conf = conf["mqtt"]
     broker = mqtt_conf["broker"]
     port   = int(mqtt_conf.get("port", 1883))
@@ -121,43 +132,34 @@ def main():
 
     print(f"[MQTT] broker={broker} port={port} topic={topic}", flush=True)
 
-    loop = asyncio.get_event_loop()
+    # ✅ 背景 asyncio loop：讓 aioesphomeapi / handle_value 真正跑起來
+    loop = start_async_loop()
 
     def on_connect(client, userdata, flags, rc, *args, **kwargs):
         print("[MQTT] connected rc=", rc, "sub=", topic, flush=True)
         client.subscribe(topic, qos=0)
-
-    def on_disconnect(client, userdata, rc, *args, **kwargs):
-        print("[MQTT] disconnected rc=", rc, flush=True)
-
-    def on_log(client, userdata, level, buf):
-        print("[MQTT-LOG]", buf, flush=True)
 
     def on_message(client, userdata, msg):
         try:
             payload = msg.payload.decode("utf-8", errors="ignore").strip()
             v = float(payload)
             print(f"[MQTT] ppm={v}", flush=True)
-            loop.create_task(handle_value(v, model, conf))
+
+            # ✅ thread-safe 丟 coroutine 到背景 asyncio loop
+            asyncio.run_coroutine_threadsafe(handle_value(v, model, conf), loop)
+
         except Exception as e:
             print("[MQTT] bad payload:", repr(e), "raw=", msg.payload[:80], flush=True)
 
-    c = mqtt.Client()  # DeprecationWarning 可先忽略，功能正常
+    c = mqtt.Client()  # DeprecationWarning 可先忽略
     c.on_connect = on_connect
-    c.on_disconnect = on_disconnect
-    # c.on_log = on_log
     c.on_message = on_message
 
     if username and password:
         c.username_pw_set(username, password)
 
-    try:
-        c.connect(broker, port, keepalive=60)
-        print("[MQTT] connect() called", flush=True)
-    except Exception as e:
-        print("[MQTT] connect failed:", repr(e), flush=True)
-        raise
-
+    c.connect(broker, port, keepalive=60)
+    print("[MQTT] connect() called", flush=True)
     c.loop_forever()
 
 if __name__ == "__main__":
