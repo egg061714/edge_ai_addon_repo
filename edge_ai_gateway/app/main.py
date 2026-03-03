@@ -6,6 +6,11 @@ import os
 import paho.mqtt.client as mqtt
 from aioesphomeapi import APIClient
 
+broker1= "192.168.1.115"
+topic1= " home/env1/sensor/mq5_voltage/state"
+username1= "egg_home"
+password1= "0908885645"
+
 MODEL_PATH = "/share/edge_ai_gateway/model.json"
 CONF_PATH  = "/share/edge_ai_gateway/runtime_config.json"
 STATE = {
@@ -112,11 +117,11 @@ def main():
     conf = load_json(CONF_PATH)
 
     mqtt_conf = conf["mqtt"]
-    broker = mqtt_conf["broker"]
+    broker = mqtt_conf[broker1]
     port = int(mqtt_conf.get("port", 1883))
-    topic = mqtt_conf["topic"]
-    username = mqtt_conf.get("username")
-    password = mqtt_conf.get("password")
+    topic = mqtt_conf[topic1]
+    username = mqtt_conf.get(username1)
+    password = mqtt_conf.get(password1)
 
     loop = asyncio.get_event_loop()
 
