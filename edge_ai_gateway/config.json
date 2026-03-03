@@ -1,12 +1,12 @@
 {
   "name": "Edge AI Gateway",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "slug": "edge_ai_gateway",
   "description": "AI/Rule decision service controlling ESPHome devices via native API",
   "startup": "services",
   "boot": "auto",
   "arch": ["aarch64", "armv7", "amd64"],
-  "map": ["addon_config"],
+  "map": ["addon_config"] ["share:rw"],
   "host_network": true,
   "options": {},
   "schema": {}
