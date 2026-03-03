@@ -112,11 +112,11 @@ def main():
     conf = load_json(CONF_PATH)
 
     mqtt_conf = conf["mqtt"]
-    broker = mqtt_conf[broker]
+    broker = mqtt_conf["broker"]
     port = int(mqtt_conf.get("port", 1883))
-    topic = mqtt_conf[topic]
-    username = mqtt_conf.get(username)
-    password = mqtt_conf.get(password)
+    topic = mqtt_conf["topic"]
+    username = mqtt_conf.get("username")
+    password = mqtt_conf.get("password")
 
     loop = asyncio.get_event_loop()
 
