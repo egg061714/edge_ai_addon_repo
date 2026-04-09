@@ -210,6 +210,7 @@ def main():
 
     print(f"[MQTT] broker={broker} topic={topic}", flush=True)
     loop = start_async_loop()
+    asyncio.run_coroutine_threadsafe(periodic_inference_loop(conf), loop)
 
     def on_connect(client, userdata, flags, rc, *args, **kwargs):
         print("[MQTT] 已連線, 開始訂閱:", topic, flush=True)
