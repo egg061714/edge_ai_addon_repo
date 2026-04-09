@@ -217,26 +217,32 @@ def main():
 
     def on_message(client, userdata, msg):
         try:
-            # 假設 ESP32 傳來的格式可能是不完整的 JSON
-            # 例如 ESP32-A 傳: {"temperature": 26.5, "humidity": 65}
-            # 例如 ESP32-B 傳: {"mq5": 150}
             payload_str = msg.payload.decode("utf-8", errors="ignore").strip()
-            data_dict = json.loads(payload_str)
             
-            # --- 關鍵修改：只更新有收到的欄位 ---
+            # 嘗試解析 JSON
+            try:
+                data_dict = json.loads(payload_str)
+                # 如果解析出來不是 dict (例如是純數字 0.52)
+                if not isinstance(data_dict, dict):
+                    # 假設這個純數字屬於某個預設感測器 (例如 mq5)
+                    # 你可以根據 topic 名稱來判斷，或者預設給一個欄位
+                    data_dict = {"mq5": float(payload_str)} 
+            except json.JSONDecodeError:
+                # 如果連 JSON 都不是，嘗試直接轉 float
+                data_dict = {"mq5": float(payload_str)}
+
+            # --- 更新快取邏輯 ---
             updated_keys = []
-            for key in data_dict.keys():
+            for key, value in data_dict.items():
                 if key in LATEST_SENSOR_DATA:
-                    LATEST_SENSOR_DATA[key] = float(data_dict[key])
+                    LATEST_SENSOR_DATA[key] = float(value)
                     updated_keys.append(key)
             
             if updated_keys:
-                print(f"[MQTT 更新快取] {updated_keys} -> {payload_str}")
+                print(f"[MQTT 更新快取] {updated_keys} -> {data_dict}")
 
-        except json.JSONDecodeError:
-            print("[MQTT] Payload 不是有效的 JSON 格式", flush=True)
         except Exception as e:
-            print("[MQTT] 處理訊息時發生錯誤:", repr(e), flush=True)
+            print(f"[MQTT 錯誤] 無法處理此 Payload: {payload_str} | 錯誤: {repr(e)}", flush=True)
 
     c = mqtt.Client()
     c.on_connect = on_connect
