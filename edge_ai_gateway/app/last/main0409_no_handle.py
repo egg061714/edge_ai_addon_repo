@@ -99,28 +99,33 @@ def extract_robust_features(window_data):
     # 回傳 shape: (1, 16)
     return np.concatenate([curr_val, win_mean, win_std, win_trend]).reshape(1, -1)
 
-def infer_hybrid_model_with_root_cause(current_vals, window_data):
-    # --- 1. Z-score 診斷 (最直接的根因) ---
+def infer_hybrid_model(current_vals, window_data):
+    """
+    執行 Hybrid 推論：
+    1. Z-score 抓瞬間突波 (單點)
+    2. iForest 抓趨勢脈絡 (區塊)
+    """
+    # --- 1. Z-score 檢測 ---
+    z_alarm = False
     for i, col in enumerate(FEATURE_COLS):
+        val = current_vals[i]
         params = models["zscore"][col]
-        z = abs((current_vals[i] - params["mean"]) / params["std"])
-        if z > params["threshold"]:
-            return True, col # 直接抓到現行犯
+        z_score = abs((val - params["mean"]) / params["std"])
+        if z_score > params["threshold"]:
+            z_alarm = True
+            print(f"[Z-SCORE 觸發] {col} 數值異常! (z={z_score:.2f})")
+            break # 只要有一個維度突破天際就報警
             
-    # --- 2. IForest 診斷 (脈絡異常) ---
+    # --- 2. Isolation Forest 檢測 ---
+    if_alarm = False
     X_features = extract_robust_features(window_data)
-    if models["iforest"].predict(X_features)[0] == -1:
-        # 如果 IForest 報警但 Z-score 沒過，找出偏離視窗平均最嚴重的
-        window_np = np.array(window_data)
-        win_mean = np.mean(window_np, axis=0)
-        win_std = np.std(window_np, axis=0) + 1e-6
+    pred = models["iforest"].predict(X_features)
+    if pred[0] == -1:
+        if_alarm = True
+        print(f"[IFOREST 觸發] 發現區塊/趨勢異常!")
         
-        # 計算每個感測器的偏離程度 (Z-score 思想)
-        deviation = np.abs(current_vals - win_mean) / win_std
-        root_cause_idx = np.argmax(deviation)
-        return True, FEATURE_COLS[root_cause_idx]
-        
-    return False, None
+    # --- 3. 邏輯融合 (Logical OR) ---
+    return z_alarm or if_alarm
 
 async def handle_sensor_data(current_vals: list, conf: dict):
     # 將新資料推入滑動視窗
@@ -132,7 +137,7 @@ async def handle_sensor_data(current_vals: list, conf: dict):
         return
 
     # 進行推論
-    is_anomaly, reason_sensor = infer_hybrid_model_with_root_cause(current_vals, STATE["buffer"])
+    is_anomaly = infer_hybrid_model(current_vals, STATE["buffer"])
     
     # 加入原有的防抖/遲滯邏輯 (Hold Seconds)
     hold = float(conf.get("hold_seconds", 5))
@@ -150,21 +155,10 @@ async def handle_sensor_data(current_vals: list, conf: dict):
     print(f"[DECISION] AI判定異常={is_anomaly} | 最終繼電器狀態={should_alarm} | in_hold={in_hold}", flush=True)
 
     # 狀態改變才發送控制指令
-    if should_alarm and is_anomaly:
-        print(f"[判定] 異常感測器: {reason_sensor} | 數值: {current_vals}")
-        
-        # 這裡就是你的決策映射 (Decision Mapping)
-        target_switch = "General Alarm" # 預設
-        if reason_sensor == "mq5":
-            target_switch = "Gas Valve"
-        elif reason_sensor in ["temperature", "humidity"]:
-            target_switch = "Fan Relay"
-        elif reason_sensor == "pm25":
-            target_switch = "Air Purifier"
+    if should_alarm == STATE["alarm"]: return
 
-        # 如果狀態改變，才去控制對應的裝置
-        if should_alarm != STATE["alarm"]:
-            await esphome_set_switch(conf["esphome"], target_switch, True)
+    esph = conf["esphome"]
+    name_contains = esph.get("switch_name_contains", "Fan Relay")
 
     try:
         await esphome_set_switch(esph, name_contains, should_alarm)
