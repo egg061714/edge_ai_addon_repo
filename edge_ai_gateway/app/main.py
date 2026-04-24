@@ -50,6 +50,8 @@ def load_ai_models():
     print(f"[BOOT] 載入 AI 模型中...", flush=True)
     models["iforest"] = joblib.load(MODEL_IFOREST_PATH)
     models["zscore"] = joblib.load(MODEL_ZSCORE_PATH)
+
+    print(f"Z-score 欄位列表: {models['zscore'].keys()}")
     print(f"[BOOT] 模型載入完成！", flush=True)
 
 # =========================================
@@ -178,7 +180,7 @@ async def handle_sensor_data(current_vals: list, conf: dict):
             await esphome_set_switch(conf["esphome"], target_switch, True)
 
     try:
-        await esphome_set_switch(esph, name_contains, should_alarm)
+        await esphome_set_switch(conf["esphome"], target_switch, should_alarm)
         STATE["alarm"] = should_alarm
         STATE["last_change"] = time.time()
         print(f"[ACTION] 成功切換警報狀態: {should_alarm}", flush=True)
