@@ -159,7 +159,7 @@ async def handle_sensor_data(current_vals: list, conf: dict):
             target_switch = "Gas Valve"
         elif reason_sensor in ["temperature", "humidity"]:
             target_switch = "Fan Relay"
-        elif reason_sensor == "pm25":
+        elif reason_sensor == "dust_ratio":
             target_switch = "Air Purifier"
 
         # 如果狀態改變，才去控制對應的裝置
