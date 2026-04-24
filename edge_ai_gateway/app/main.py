@@ -124,7 +124,7 @@ def infer_hybrid_model_with_root_cause(current_vals, window_data):
 
 async def handle_sensor_data(current_vals: list, conf: dict):
     # 將新資料推入滑動視窗
-    STATE["buffer"].append(current_vals)
+    # STATE["buffer"].append(current_vals)
     
     # 如果資料還沒收滿 Window Size (10筆)，先不推論
     if len(STATE["buffer"]) < WINDOW_SIZE:
@@ -176,18 +176,17 @@ async def handle_sensor_data(current_vals: list, conf: dict):
         STATE["switch_key"] = None
 
 async def periodic_inference_loop(conf: dict):
-    """定頻採樣迴圈：每隔 N 秒將最新的感測器數值截圖，送入 AI 推論"""
-    interval = float(conf.get("inference_interval_seconds", 5.0)) # 預設每 5 秒推論一次
-    print(f"[SYSTEM] 啟動定頻推論迴圈，每 {interval} 秒執行一次...", flush=True)
-    
+    interval = float(conf.get("inference_interval_seconds", 5.0))
     while True:
         await asyncio.sleep(interval)
         
-        # 依照 FEATURE_COLS 順序，從快取中拿出最新數值
-        current_vals = [float(LATEST_SENSOR_DATA[col]) for col in FEATURE_COLS]
-        
-        # 丟進我們寫好的處理邏輯
-        await handle_sensor_data(current_vals, conf)
+        # 檢查視窗夠不夠長
+        if len(STATE["buffer"]) >= WINDOW_SIZE:
+            # 取得當前最新的視窗快照進行 AI 推論
+            current_vals = list(STATE["buffer"])[-1] 
+            await handle_sensor_data(current_vals, conf)
+        else:
+            print(f"[SYSTEM] 等待資料存滿中... ({len(STATE['buffer'])}/10)", flush=True)
 
 
 # =========================================
@@ -223,7 +222,7 @@ def main():
         client.subscribe(topic, qos=0)
 
     def on_message(client, userdata, msg):
-        print(f"DEBUG: 收到訊息了! Topic={msg.topic} Payload={msg.payload}", flush=True)
+        # print(f"DEBUG: 收到訊息了! Topic={msg.topic} Payload={msg.payload}", flush=True)
         try:
             payload_str = msg.payload.decode("utf-8", errors="ignore").strip()
             
@@ -251,8 +250,15 @@ def main():
                     continue 
             
             if updated_keys:
-                # 這樣印出 Log 你才知道到底收到了什麼 Key
-                print(f"[MQTT 更新快取] {updated_keys} | 目前快取內容: {LATEST_SENSOR_DATA}")
+                print(f"[MQTT 更新快取] {updated_keys} -> {data_dict}")
+                
+                # 這裡補上：只要有任何資料更新，就把當前的四個數值狀態存入 buffer
+                current_snap = [float(LATEST_SENSOR_DATA.get(col, 0.0)) for col in FEATURE_COLS]
+                STATE["buffer"].append(current_snap)
+                
+                # 這樣你就會看到 buffer 快速跳動了 (1/10, 2/10...)
+                if len(STATE["buffer"]) < WINDOW_SIZE:
+                    print(f"[BUFFER] 視窗累積中: {len(STATE['buffer'])}/10", flush=True)
 
         except Exception as e:
             print(f"[MQTT 錯誤] 無法處理此 Payload: {payload_str} | 錯誤: {repr(e)}", flush=True)
