@@ -197,7 +197,7 @@ def main():
                 # 每當資料更新，就塞入滑動視窗
                 snap = [float(LATEST_SENSOR_DATA[c]) for c in FEATURE_COLS]
                 STATE["buffer"].append(snap)
-                print(f"[MQTT 更新] {updated} | Buffer: {len(STATE['buffer'])}/10", flush=True)
+                # print(f"[MQTT 更新] {updated} | Buffer: {len(STATE['buffer'])}/10", flush=True)
 
         except Exception as e:
             print(f"[MQTT ERROR] {e}", flush=True)
