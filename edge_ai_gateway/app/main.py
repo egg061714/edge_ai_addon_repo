@@ -2,6 +2,7 @@ import asyncio
 import json
 import time
 import threading
+import traceback
 from typing import Optional
 from collections import deque
 
@@ -11,18 +12,21 @@ import paho.mqtt.client as mqtt
 from aioesphomeapi import APIClient
 
 # =========================================
-# 1. 檔案路徑與全域設定 (配合昨天匯出的 Hybrid 模型)periodic_inference_loop
+# 1. 檔案路徑與全域設定
 # =========================================
 MODEL_IFOREST_PATH = "/share/edge_ai_gateway/pi_model_iforest.joblib"
 MODEL_ZSCORE_PATH  = "/share/edge_ai_gateway/pi_model_zscore_params.joblib"
 CONF_PATH          = "/share/edge_ai_gateway/runtime_config.json"
 
+# 模型訓練時的原始欄位 (對應 Z-score 字典的 Key)
+TRAINED_COLS = ["temperature", "humidity", "light", "voltage"]
+# 實際部署時的感測器映射順序
+# [temp->temp, humi->humi, light->mq5, voltage->dust_ratio]
 FEATURE_COLS = ["temperature", "humidity", "mq5", "dust_ratio"]
 WINDOW_SIZE = 10
 
-# --- 新增：用來儲存各個 ESP32 傳來的最新數值 ---
 LATEST_SENSOR_DATA = {
-    "temperature": 25.0,  # 給定合理的初始安全值
+    "temperature": 25.0,
     "humidity": 50.0,
     "mq5": 0.0,
     "dust_ratio": 0.0
@@ -35,30 +39,23 @@ STATE = {
     "switch_key": None,
 }
 
-# 全域模型變數
-models = {
-    "iforest": None,
-    "zscore": None
-}
+models = {"iforest": None, "zscore": None}
 
+# =========================================
+# 2. 工具函式
+# =========================================
 def load_json(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 def load_ai_models():
-    """載入 Scikit-learn 模型與 Z-score 參數"""
     print(f"[BOOT] 載入 AI 模型中...", flush=True)
     models["iforest"] = joblib.load(MODEL_IFOREST_PATH)
     models["zscore"] = joblib.load(MODEL_ZSCORE_PATH)
+    print(f"[BOOT] 模型載入完成！Z-score 欄位: {list(models['zscore'].keys())}", flush=True)
 
-    print(f"Z-score 欄位列表: {models['zscore'].keys()}")
-    print(f"[BOOT] 模型載入完成！", flush=True)
-
-# =========================================
-# 2. ESPHome 控制邏輯 (保留你原本的優秀設計)
-# =========================================
 async def get_switch_key(client: APIClient, name_contains: str) -> int:
-    entities, _services = await client.list_entities_services()
+    entities, _ = await client.list_entities_services()
     for e in entities:
         name = (getattr(e, "name", "") or "").lower()
         obj  = (getattr(e, "object_id", "") or "").lower()
@@ -67,241 +64,151 @@ async def get_switch_key(client: APIClient, name_contains: str) -> int:
             if key is not None: return key
     raise RuntimeError(f"Switch not found: '{name_contains}'")
 
-async def esphome_set_switch(esph: dict, name_contains: str, turn_on: bool):
-    noise_psk: Optional[str] = esph.get("encryption_key")
-    client = APIClient(address=esph["host"], port=int(esph.get("port", 6053)), password=None, noise_psk=noise_psk)
-    
-    res = client.connect(login=True)
-    if asyncio.iscoroutine(res): await res
-
-    if STATE["switch_key"] is None:
-        STATE["switch_key"] = await get_switch_key(client, name_contains)
-
+async def esphome_set_switch(esph_conf: dict, name_contains: str, turn_on: bool):
+    """執行 ESPHome 繼電器控制"""
+    client = APIClient(
+        address=esph_conf["host"], 
+        port=int(esph_conf.get("port", 6053)), 
+        password=None, 
+        noise_psk=esph_conf.get("encryption_key")
+    )
     try:
-        res = client.switch_command(STATE["switch_key"], turn_on)
-        if asyncio.iscoroutine(res): await res
-    except TypeError:
-        res = client.switch_command(key=STATE["switch_key"], state=turn_on)
-        if asyncio.iscoroutine(res): await res
-
-    res = client.disconnect()
-    if asyncio.iscoroutine(res): await res
+        await client.connect(login=True)
+        if STATE["switch_key"] is None:
+            STATE["switch_key"] = await get_switch_key(client, name_contains)
+        
+        await client.switch_command(STATE["switch_key"], turn_on)
+        print(f"[ESPHome] 成功切換 {name_contains} -> {turn_on}", flush=True)
+    finally:
+        await client.disconnect()
 
 # =========================================
-# 3. 邊緣推論核心 (特徵提取 + Hybrid 融合)
+# 3. 邊緣推論核心
 # =========================================
 def extract_robust_features(window_data):
-    try:
-        window = np.array(window_data, dtype=np.float64) 
-        # 如果這裡噴錯，代表 window_data 內容物有問題（例如有 None 或長度不一）
-        
-        curr_val = window[-1]
-        win_mean = np.mean(window, axis=0)
-        win_std = np.std(window, axis=0)
-        win_trend = window[-1] - window[0]
-        
-        res = np.concatenate([curr_val, win_mean, win_std, win_trend]).reshape(1, -1)
-        return res
-    except Exception as e:
-        print(f"[FEATURE ERROR] 矩陣運算失敗: {repr(e)}", flush=True)
-        return None
+    """將視窗資料轉換為 16 維特徵 (4感測器 * 4統計量)"""
+    window = np.array(window_data, dtype=np.float64)
+    curr_val = window[-1]
+    win_mean = np.mean(window, axis=0)
+    win_std = np.std(window, axis=0)
+    win_trend = window[-1] - window[0]
+    return np.concatenate([curr_val, win_mean, win_std, win_trend]).reshape(1, -1)
 
 def infer_hybrid_model_with_root_cause(current_vals, window_data):
-    # --- 1. Z-score 診斷 (最直接的根因) ---
-    TRAINED_COLS = ["temperature", "humidity", "light", "voltage"]
-    for i, col in enumerate(TRAINED_COLS):
-        if col not in models["zscore"]:
-            print(f"ERROR: Z-score 參數缺少欄位 {col}", flush=True)
-            return False, None
-        
-        params = models["zscore"][col]
-        z = abs((current_vals[i] - params["mean"]) / params["std"])
-        if z > params["threshold"]:
-            # 這裡回傳時，要把 "light" 映射回 "mq5" 給 user 看
-            display_name = ["temperature", "humidity", "mq5", "dust_ratio"][i]
-            return True, display_name
-            
-    # --- 2. IForest 診斷 (脈絡異常) ---
-    print("DEBUG: 開始 IForest 特徵提取...", flush=True)
-    try:
-        X_features = extract_robust_features(window_data)
-        print(f"DEBUG: X_features shape = {X_features.shape}", flush=True)
-        
-        pred = models["iforest"].predict(X_features)[0]
-        print(f"DEBUG: IForest 預測結果 = {pred}", flush=True)
-        
-        if pred == -1:
-            # 原本的 root cause 邏輯...
-            return True, "Context Anomaly"
-    except Exception as e:
-        print(f"ERROR: IForest 推論失敗: {repr(e)}", flush=True)
+    # --- 1. Z-score 診斷 (映射至訓練時的 Key) ---
+    for i, trained_key in enumerate(TRAINED_COLS):
+        if trained_key in models["zscore"]:
+            params = models["zscore"][trained_key]
+            z = abs((current_vals[i] - params["mean"]) / (params["std"] + 1e-6))
+            if z > params["threshold"]:
+                return True, FEATURE_COLS[i] # 回傳現實中的感測器名稱
 
+    # --- 2. IForest 診斷 ---
+    X_features = extract_robust_features(window_data)
+    if models["iforest"].predict(X_features)[0] == -1:
+        # 找出偏離平均最嚴重的作為根因
+        window_np = np.array(window_data)
+        deviation = np.abs(current_vals - np.mean(window_np, axis=0)) / (np.std(window_np, axis=0) + 1e-6)
+        return True, FEATURE_COLS[np.argmax(deviation)]
+        
     return False, None
 
 async def handle_sensor_data(current_vals: list, conf: dict):
-    # 將新資料推入滑動視窗
-    # STATE["buffer"].append(current_vals)
-    print(f"[推論啟動] 準備餵入模型: {current_vals} | 視窗長度: {len(STATE['buffer'])}", flush=True)
-    # 如果資料還沒收滿 Window Size (10筆)，先不推論
-    if len(STATE["buffer"]) < WINDOW_SIZE:
-        print(f"[BUFFER] 收集資料中... ({len(STATE['buffer'])}/{WINDOW_SIZE})")
-        return
-
-    # 進行推論
-    is_anomaly, reason_sensor = infer_hybrid_model_with_root_cause(current_vals, STATE["buffer"])
-    
-    # 加入原有的防抖/遲滯邏輯 (Hold Seconds)
-    hold = float(conf.get("hold_seconds", 5))
-    now = time.time()
-    in_hold = (now - STATE["last_change"]) < hold
-    
-    # 決定是否真正要觸發警報
-    if STATE["alarm"]:
-        # 如果正在警報中，必須等異常消失「且」過了 hold 時間才能解除
-        should_alarm = not (not is_anomaly and not in_hold)
-    else:
-        # 如果沒在警報，一發現異常立刻觸發
-        should_alarm = is_anomaly
-
-    print(f"[DECISION] AI判定異常={is_anomaly} | 最終繼電器狀態={should_alarm} | in_hold={in_hold}", flush=True)
-
-    # 狀態改變才發送控制指令
-    if should_alarm and is_anomaly:
-        print(f"[判定] 異常感測器: {reason_sensor} | 數值: {current_vals}")
-        
-        # 這裡就是你的決策映射 (Decision Mapping)
-        target_switch = "General Alarm" # 預設
-        if reason_sensor == "mq5":
-            target_switch = "Gas Valve"
-        elif reason_sensor in ["temperature", "humidity"]:
-            target_switch = "Fan Relay"
-        elif reason_sensor == "dust_ratio":
-            target_switch = "Air Purifier"
-
-        # 如果狀態改變，才去控制對應的裝置
-        if should_alarm != STATE["alarm"]:
-            await esphome_set_switch(conf["esphome"], target_switch, True)
-
     try:
-        await esphome_set_switch(conf["esphome"], target_switch, should_alarm)
-        STATE["alarm"] = should_alarm
-        STATE["last_change"] = time.time()
-        print(f"[ACTION] 成功切換警報狀態: {should_alarm}", flush=True)
+        # 如果視窗還沒滿，不執行推論
+        if len(STATE["buffer"]) < WINDOW_SIZE:
+            return
+
+        print(f"[推論啟動] 數據: {current_vals}", flush=True)
+        is_anomaly, reason_sensor = infer_hybrid_model_with_root_cause(current_vals, STATE["buffer"])
+        print(f"[AI 結果] 異常: {is_anomaly}, 根因: {reason_sensor}", flush=True)
+
+        # 防抖邏輯
+        hold = float(conf.get("hold_seconds", 5))
+        now = time.time()
+        in_hold = (now - STATE["last_change"]) < hold
+        
+        # 狀態決策
+        should_alarm = is_anomaly if not STATE["alarm"] else not (not is_anomaly and not in_hold)
+
+        if should_alarm != STATE["alarm"]:
+            # 根據原因選擇控制裝置
+            target = "General Alarm"
+            if reason_sensor == "mq5": target = "Gas Valve"
+            elif reason_sensor in ["temperature", "humidity"]: target = "Fan Relay"
+
+            await esphome_set_switch(conf["esphome"], target, should_alarm)
+            STATE["alarm"] = should_alarm
+            STATE["last_change"] = now
+            print(f"[ACTION] 狀態改變為: {should_alarm} (原因: {reason_sensor})", flush=True)
+
     except Exception as e:
-        print("[ERROR] ESPHome 控制失敗:", repr(e), flush=True)
-        STATE["switch_key"] = None
+        print(f"[CRITICAL ERROR] handle_sensor_data 崩潰: {repr(e)}", flush=True)
+        traceback.print_exc()
 
 async def periodic_inference_loop(conf: dict):
-    # ... 前面省略
+    interval = float(conf.get("inference_interval_seconds", 5.0))
+    print(f"[SYSTEM] 啟動定頻推論，週期: {interval}s", flush=True)
     while True:
         await asyncio.sleep(interval)
-        
-        # 強制進行映射映射：
-        # 模型以為是: [temp, humi, light, voltage]
-        # 我們實際給: [temp, humi, mq5,   dust_ratio]
-        try:
-            current_vals = [
-                float(LATEST_SENSOR_DATA.get("temperature", 25.0)),
-                float(LATEST_SENSOR_DATA.get("humidity", 50.0)),
-                float(LATEST_SENSOR_DATA.get("mq5", 0.0)),
-                float(LATEST_SENSOR_DATA.get("dust_ratio", 0.0))
-            ]
+        if len(STATE["buffer"]) >= WINDOW_SIZE:
+            # 拍照當下快照
+            current_vals = [float(LATEST_SENSOR_DATA[col]) for col in FEATURE_COLS]
             await handle_sensor_data(current_vals, conf)
-            if len(STATE["buffer"]) >= WINDOW_SIZE:
-             # 取得當前最新的視窗快照進行 AI 推論
-                current_vals = list(STATE["buffer"])[-1] 
-                await handle_sensor_data(current_vals, conf)
-            else:
-                print(f"[SYSTEM] 等待資料存滿中... ({len(STATE['buffer'])}/10)", flush=True)
-
-        except Exception as e:
-            print(f"Loop Error: {e}")
-
-        
-
+        else:
+            print(f"[SYSTEM] 等待資料存滿... ({len(STATE['buffer'])}/10)", flush=True)
 
 # =========================================
-# 4. MQTT 接收與啟動程序
+# 4. MQTT 與啟動
 # =========================================
-def start_async_loop():
+def main():
+    print("[BOOT] Edge AI Gateway starting...", flush=True)
+    conf = load_json(CONF_PATH)
+    load_ai_models()
+
+    # 啟動非同步背景執行緒
     loop = asyncio.new_event_loop()
     def runner():
         asyncio.set_event_loop(loop)
         loop.run_forever()
-    t = threading.Thread(target=runner, daemon=True)
-    t.start()
-    return loop
-
-def main():
-    print("[BOOT] Edge AI Gateway starting...", flush=True)
-    
-    # 載入設定與模型
-    conf = load_json(CONF_PATH)
-    load_ai_models()
-
-    mqtt_conf = conf["mqtt"]
-    broker = mqtt_conf["broker"]
-    port   = int(mqtt_conf.get("port", 1883))
-    topic  = str(mqtt_conf["topic"]).strip()
-
-    print(f"[MQTT] broker={broker} topic={topic}", flush=True)
-    loop = start_async_loop()
+    threading.Thread(target=runner, daemon=True).start()
     asyncio.run_coroutine_threadsafe(periodic_inference_loop(conf), loop)
 
-    def on_connect(client, userdata, flags, rc, *args, **kwargs):
-        print("[MQTT] 已連線, 開始訂閱:", topic, flush=True)
-        client.subscribe(topic, qos=0)
+    mqtt_conf = conf["mqtt"]
+    topic = str(mqtt_conf["topic"]).strip()
+
+    def on_connect(client, userdata, flags, rc):
+        print(f"[MQTT] 已連線, 訂閱: {topic}", flush=True)
+        client.subscribe(topic)
 
     def on_message(client, userdata, msg):
-        # print(f"DEBUG: 收到訊息了! Topic={msg.topic} Payload={msg.payload}", flush=True)
         try:
-            payload_str = msg.payload.decode("utf-8", errors="ignore").strip()
-            
-            # 嘗試解析 JSON
-            try:
-                data_dict = json.loads(payload_str)
-                # 如果解析出來不是 dict (例如是純數字 0.52)
-                if not isinstance(data_dict, dict):
-                    # 假設這個純數字屬於某個預設感測器 (例如 mq5)
-                    # 你可以根據 topic 名稱來判斷，或者預設給一個欄位
-                    data_dict = {"mq5": float(payload_str)} 
-            except json.JSONDecodeError:
-                # 如果連 JSON 都不是，嘗試直接轉 float
-                data_dict = {"mq5": float(payload_str)}
+            payload = json.loads(msg.payload.decode("utf-8", errors="ignore"))
+            if not isinstance(payload, dict): return
 
-            # --- 更新快取邏輯 ---
-            # --- 更新快取邏輯 (建議修改版) ---
-            updated_keys = []
-            for key, value in data_dict.items():
-                try:
-                    # 直接寫入或更新，不檢查 key 是否已存在
-                    LATEST_SENSOR_DATA[key] = float(value)
-                    updated_keys.append(key)
-                except (ValueError, TypeError):
-                    continue 
+            # 更新 LATEST_SENSOR_DATA 快取
+            updated = []
+            for k, v in payload.items():
+                if k in LATEST_SENSOR_DATA:
+                    LATEST_SENSOR_DATA[k] = float(v)
+                    updated.append(k)
             
-            if updated_keys:
-                print(f"[MQTT 更新快取] {updated_keys} -> {data_dict}")
-                
-                # 這裡補上：只要有任何資料更新，就把當前的四個數值狀態存入 buffer
-                current_snap = [float(LATEST_SENSOR_DATA.get(col, 0.0)) for col in FEATURE_COLS]
-                STATE["buffer"].append(current_snap)
-                
-                # 這樣你就會看到 buffer 快速跳動了 (1/10, 2/10...)
-                if len(STATE["buffer"]) < WINDOW_SIZE:
-                    print(f"[BUFFER] 視窗累積中: {len(STATE['buffer'])}/10", flush=True)
+            if updated:
+                # 每當資料更新，就塞入滑動視窗
+                snap = [float(LATEST_SENSOR_DATA[c]) for c in FEATURE_COLS]
+                STATE["buffer"].append(snap)
+                # print(f"[MQTT 更新] {updated} | Buffer: {len(STATE['buffer'])}/10", flush=True)
 
         except Exception as e:
-            print(f"[MQTT 錯誤] 無法處理此 Payload: {payload_str} | 錯誤: {repr(e)}", flush=True)
+            print(f"[MQTT ERROR] {e}", flush=True)
 
     c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
-    c.on_connect = on_connect
-    c.on_message = on_message
-    
     if mqtt_conf.get("username"):
         c.username_pw_set(mqtt_conf["username"], mqtt_conf.get("password"))
-
-    c.connect(broker, port, keepalive=60)
+    
+    c.on_connect = on_connect
+    c.on_message = on_message
+    c.connect(mqtt_conf["broker"], int(mqtt_conf.get("port", 1883)))
     c.loop_forever()
 
 if __name__ == "__main__":
