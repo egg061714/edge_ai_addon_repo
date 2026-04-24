@@ -109,7 +109,11 @@ def extract_robust_features(window_data):
 def infer_hybrid_model_with_root_cause(current_vals, window_data):
     # --- 1. Z-score 診斷 (最直接的根因) ---
     TRAINED_COLS = ["temperature", "humidity", "light", "voltage"]
-    for i, col in enumerate(TRAINED_COLS): # 改用訓練時的標籤來找 params
+    for i, col in enumerate(TRAINED_COLS):
+        if col not in models["zscore"]:
+            print(f"ERROR: Z-score 參數缺少欄位 {col}", flush=True)
+            return False, None
+        
         params = models["zscore"][col]
         z = abs((current_vals[i] - params["mean"]) / params["std"])
         if z > params["threshold"]:
