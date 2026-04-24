@@ -89,38 +89,48 @@ async def esphome_set_switch(esph: dict, name_contains: str, turn_on: bool):
 # 3. 邊緣推論核心 (特徵提取 + Hybrid 融合)
 # =========================================
 def extract_robust_features(window_data):
-    """將 10 筆資料轉換為模型需要的 16 維特徵 (當下, 平均, 波動, 趨勢)"""
-    window = np.array(window_data) # shape: (10, 4)
-    print(f"DEBUG Window Shape: {window.shape}")
-    curr_val = window[-1]
-    win_mean = np.mean(window, axis=0)
-    win_std = np.std(window, axis=0)
-    win_trend = window[-1] - window[0]
-    
-    # 回傳 shape: (1, 16)
-    return np.concatenate([curr_val, win_mean, win_std, win_trend]).reshape(1, -1)
+    try:
+        window = np.array(window_data, dtype=np.float64) 
+        # 如果這裡噴錯，代表 window_data 內容物有問題（例如有 None 或長度不一）
+        
+        curr_val = window[-1]
+        win_mean = np.mean(window, axis=0)
+        win_std = np.std(window, axis=0)
+        win_trend = window[-1] - window[0]
+        
+        res = np.concatenate([curr_val, win_mean, win_std, win_trend]).reshape(1, -1)
+        return res
+    except Exception as e:
+        print(f"[FEATURE ERROR] 矩陣運算失敗: {repr(e)}", flush=True)
+        return None
 
 def infer_hybrid_model_with_root_cause(current_vals, window_data):
     # --- 1. Z-score 診斷 (最直接的根因) ---
     for i, col in enumerate(FEATURE_COLS):
+        if col not in models["zscore"]:
+            print(f"ERROR: Z-score 參數缺少欄位 {col}", flush=True)
+            return False, None
+        
         params = models["zscore"][col]
         z = abs((current_vals[i] - params["mean"]) / params["std"])
         if z > params["threshold"]:
             return True, col # 直接抓到現行犯
             
     # --- 2. IForest 診斷 (脈絡異常) ---
-    X_features = extract_robust_features(window_data)
-    if models["iforest"].predict(X_features)[0] == -1:
-        # 如果 IForest 報警但 Z-score 沒過，找出偏離視窗平均最嚴重的
-        window_np = np.array(window_data)
-        win_mean = np.mean(window_np, axis=0)
-        win_std = np.std(window_np, axis=0) + 1e-6
+    print("DEBUG: 開始 IForest 特徵提取...", flush=True)
+    try:
+        X_features = extract_robust_features(window_data)
+        print(f"DEBUG: X_features shape = {X_features.shape}", flush=True)
         
-        # 計算每個感測器的偏離程度 (Z-score 思想)
-        deviation = np.abs(current_vals - win_mean) / win_std
-        root_cause_idx = np.argmax(deviation)
-        return True, FEATURE_COLS[root_cause_idx]
+        pred = models["iforest"].predict(X_features)[0]
+        print(f"DEBUG: IForest 預測結果 = {pred}", flush=True)
         
+        if pred == -1:
+            # 原本的 root cause 邏輯...
+            return True, "Context Anomaly"
+    except Exception as e:
+        print(f"ERROR: IForest 推論失敗: {repr(e)}", flush=True)
+
     return False, None
 
 async def handle_sensor_data(current_vals: list, conf: dict):
