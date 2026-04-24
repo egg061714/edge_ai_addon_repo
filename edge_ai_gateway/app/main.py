@@ -137,7 +137,7 @@ async def handle_sensor_data(current_vals: list, conf: dict):
             if reason_sensor == "mq5": target = "Gas Valve"
             elif reason_sensor in ["temperature", "humidity"]: target = "Fan Relay"
 
-            await esphome_set_switch(conf["esphome"], target, should_alarm)
+            # await esphome_set_switch(conf["esphome"], target, should_alarm)
             STATE["alarm"] = should_alarm
             STATE["last_change"] = now
             print(f"[ACTION] 狀態改變為: {should_alarm} (原因: {reason_sensor})", flush=True)
@@ -197,7 +197,7 @@ def main():
                 # 每當資料更新，就塞入滑動視窗
                 snap = [float(LATEST_SENSOR_DATA[c]) for c in FEATURE_COLS]
                 STATE["buffer"].append(snap)
-                # print(f"[MQTT 更新] {updated} | Buffer: {len(STATE['buffer'])}/10", flush=True)
+                print(f"[MQTT 更新] {updated} | Buffer: {len(STATE['buffer'])}/10", flush=True)
 
         except Exception as e:
             print(f"[MQTT ERROR] {e}", flush=True)
