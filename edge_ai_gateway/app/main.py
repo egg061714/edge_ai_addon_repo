@@ -25,7 +25,7 @@ LATEST_SENSOR_DATA = {
     "temperature": 25.0,  # 給定合理的初始安全值
     "humidity": 50.0,
     "mq5": 0.0,
-    "pm25": 0.0
+    "dust_ratio": 0.0
 }
 
 STATE = {
