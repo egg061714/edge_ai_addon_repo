@@ -11,7 +11,7 @@ import paho.mqtt.client as mqtt
 from aioesphomeapi import APIClient
 
 # =========================================
-# 1. 檔案路徑與全域設定 (配合昨天匯出的 Hybrid 模型)
+# 1. 檔案路徑與全域設定 (配合昨天匯出的 Hybrid 模型)periodic_inference_loop
 # =========================================
 MODEL_IFOREST_PATH = "/share/edge_ai_gateway/pi_model_iforest.joblib"
 MODEL_ZSCORE_PATH  = "/share/edge_ai_gateway/pi_model_zscore_params.joblib"
@@ -108,15 +108,14 @@ def extract_robust_features(window_data):
 
 def infer_hybrid_model_with_root_cause(current_vals, window_data):
     # --- 1. Z-score 診斷 (最直接的根因) ---
-    for i, col in enumerate(FEATURE_COLS):
-        if col not in models["zscore"]:
-            print(f"ERROR: Z-score 參數缺少欄位 {col}", flush=True)
-            return False, None
-        
+    TRAINED_COLS = ["temperature", "humidity", "light", "voltage"]
+    for i, col in enumerate(TRAINED_COLS): # 改用訓練時的標籤來找 params
         params = models["zscore"][col]
         z = abs((current_vals[i] - params["mean"]) / params["std"])
         if z > params["threshold"]:
-            return True, col # 直接抓到現行犯
+            # 這裡回傳時，要把 "light" 映射回 "mq5" 給 user 看
+            display_name = ["temperature", "humidity", "mq5", "dust_ratio"][i]
+            return True, display_name
             
     # --- 2. IForest 診斷 (脈絡異常) ---
     print("DEBUG: 開始 IForest 特徵提取...", flush=True)
@@ -189,17 +188,32 @@ async def handle_sensor_data(current_vals: list, conf: dict):
         STATE["switch_key"] = None
 
 async def periodic_inference_loop(conf: dict):
-    interval = float(conf.get("inference_interval_seconds", 5.0))
+    # ... 前面省略
     while True:
         await asyncio.sleep(interval)
         
-        # 檢查視窗夠不夠長
-        if len(STATE["buffer"]) >= WINDOW_SIZE:
-            # 取得當前最新的視窗快照進行 AI 推論
-            current_vals = list(STATE["buffer"])[-1] 
+        # 強制進行映射映射：
+        # 模型以為是: [temp, humi, light, voltage]
+        # 我們實際給: [temp, humi, mq5,   dust_ratio]
+        try:
+            current_vals = [
+                float(LATEST_SENSOR_DATA.get("temperature", 25.0)),
+                float(LATEST_SENSOR_DATA.get("humidity", 50.0)),
+                float(LATEST_SENSOR_DATA.get("mq5", 0.0)),
+                float(LATEST_SENSOR_DATA.get("dust_ratio", 0.0))
+            ]
             await handle_sensor_data(current_vals, conf)
-        else:
-            print(f"[SYSTEM] 等待資料存滿中... ({len(STATE['buffer'])}/10)", flush=True)
+            if len(STATE["buffer"]) >= WINDOW_SIZE:
+             # 取得當前最新的視窗快照進行 AI 推論
+                current_vals = list(STATE["buffer"])[-1] 
+                await handle_sensor_data(current_vals, conf)
+            else:
+                print(f"[SYSTEM] 等待資料存滿中... ({len(STATE['buffer'])}/10)", flush=True)
+
+        except Exception as e:
+            print(f"Loop Error: {e}")
+
+        
 
 
 # =========================================
