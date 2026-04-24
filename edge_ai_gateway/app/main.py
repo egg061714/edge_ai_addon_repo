@@ -223,6 +223,7 @@ def main():
         client.subscribe(topic, qos=0)
 
     def on_message(client, userdata, msg):
+        print(f"DEBUG: 收到訊息了! Topic={msg.topic} Payload={msg.payload}", flush=True)
         try:
             payload_str = msg.payload.decode("utf-8", errors="ignore").strip()
             
