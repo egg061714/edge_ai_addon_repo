@@ -17,7 +17,7 @@ MODEL_IFOREST_PATH = "/share/edge_ai_gateway/pi_model_iforest.joblib"
 MODEL_ZSCORE_PATH  = "/share/edge_ai_gateway/pi_model_zscore_params.joblib"
 CONF_PATH          = "/share/edge_ai_gateway/runtime_config.json"
 
-FEATURE_COLS = ["temperature", "humidity", "mq5", "pm25"]
+FEATURE_COLS = ["temperature", "humidity", "mq5", "dust_ratio"]
 WINDOW_SIZE = 10
 
 # --- 新增：用來儲存各個 ESP32 傳來的最新數值 ---
@@ -239,19 +239,24 @@ def main():
                 data_dict = {"mq5": float(payload_str)}
 
             # --- 更新快取邏輯 ---
+            # --- 更新快取邏輯 (建議修改版) ---
             updated_keys = []
             for key, value in data_dict.items():
-                if key in LATEST_SENSOR_DATA:
+                try:
+                    # 直接寫入或更新，不檢查 key 是否已存在
                     LATEST_SENSOR_DATA[key] = float(value)
                     updated_keys.append(key)
+                except (ValueError, TypeError):
+                    continue 
             
             if updated_keys:
-                print(f"[MQTT 更新快取] {updated_keys} -> {data_dict}")
+                # 這樣印出 Log 你才知道到底收到了什麼 Key
+                print(f"[MQTT 更新快取] {updated_keys} | 目前快取內容: {LATEST_SENSOR_DATA}")
 
         except Exception as e:
             print(f"[MQTT 錯誤] 無法處理此 Payload: {payload_str} | 錯誤: {repr(e)}", flush=True)
 
-    c = mqtt.Client()
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
     c.on_connect = on_connect
     c.on_message = on_message
     
