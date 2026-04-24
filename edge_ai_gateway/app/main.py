@@ -91,6 +91,7 @@ async def esphome_set_switch(esph: dict, name_contains: str, turn_on: bool):
 def extract_robust_features(window_data):
     """將 10 筆資料轉換為模型需要的 16 維特徵 (當下, 平均, 波動, 趨勢)"""
     window = np.array(window_data) # shape: (10, 4)
+    print(f"DEBUG Window Shape: {window.shape}")
     curr_val = window[-1]
     win_mean = np.mean(window, axis=0)
     win_std = np.std(window, axis=0)
@@ -125,7 +126,7 @@ def infer_hybrid_model_with_root_cause(current_vals, window_data):
 async def handle_sensor_data(current_vals: list, conf: dict):
     # 將新資料推入滑動視窗
     # STATE["buffer"].append(current_vals)
-    
+    print(f"[推論啟動] 準備餵入模型: {current_vals} | 視窗長度: {len(STATE['buffer'])}", flush=True)
     # 如果資料還沒收滿 Window Size (10筆)，先不推論
     if len(STATE["buffer"]) < WINDOW_SIZE:
         print(f"[BUFFER] 收集資料中... ({len(STATE['buffer'])}/{WINDOW_SIZE})")
