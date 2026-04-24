@@ -26,9 +26,7 @@ TRAINED_COLS = ["temperature", "humidity", "light", "voltage"]
 # [temp->temp, humi->humi, light->mq5, voltage->dust_ratio]
 FEATURE_COLS = ["temperature", "humidity", "mq5", "dust_ratio"]
 WINDOW_SIZE = 10
-cpu_usage = 0
-ram_usage = 0
-system_ram = 0
+
 
 LATEST_SENSOR_DATA = {
     "temperature": 25.0,
