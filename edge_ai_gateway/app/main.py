@@ -163,6 +163,7 @@ async def periodic_inference_loop(conf: dict):
     print(f"[SYSTEM] 啟動定頻推論，週期: {interval}s", flush=True)
     while True:
         await asyncio.sleep(interval)
+        cpu_usage, ram_usage, system_ram = get_system_usage()
         print(f"[PERF] CPU: {cpu_usage}% | AI RAM: {ram_usage:.2f}MB | Sys RAM: {system_ram}%", flush=True)
         if len(STATE["buffer"]) >= WINDOW_SIZE:
             # 拍照當下快照
