@@ -5,6 +5,8 @@ import threading
 import traceback
 from typing import Optional
 from collections import deque
+import psutil
+import os
 
 import numpy as np
 import joblib
@@ -24,6 +26,9 @@ TRAINED_COLS = ["temperature", "humidity", "light", "voltage"]
 # [temp->temp, humi->humi, light->mq5, voltage->dust_ratio]
 FEATURE_COLS = ["temperature", "humidity", "mq5", "dust_ratio"]
 WINDOW_SIZE = 10
+cpu_usage = 0
+ram_usage = 0
+system_ram = 0
 
 LATEST_SENSOR_DATA = {
     "temperature": 25.0,
@@ -83,6 +88,14 @@ async def esphome_set_switch(esph_conf: dict, name_contains: str, turn_on: bool)
     finally:
         await client.disconnect()
 
+def get_system_usage():
+    # 獲取當前進程 (Gateway AI) 的資源佔用
+    process = psutil.Process(os.getpid())
+    cpu_usage = psutil.cpu_percent(interval=None) # 全域 CPU 使用率
+    ram_usage = process.memory_info().rss / (1024 * 1024) # 本程式佔用 RAM (MB)
+    system_ram = psutil.virtual_memory().percent # 系統總記憶體使用率
+    
+    return cpu_usage, ram_usage, system_ram
 # =========================================
 # 3. 邊緣推論核心
 # =========================================
@@ -152,6 +165,7 @@ async def periodic_inference_loop(conf: dict):
     print(f"[SYSTEM] 啟動定頻推論，週期: {interval}s", flush=True)
     while True:
         await asyncio.sleep(interval)
+        print(f"[PERF] CPU: {cpu_usage}% | AI RAM: {ram_usage:.2f}MB | Sys RAM: {system_ram}%", flush=True)
         if len(STATE["buffer"]) >= WINDOW_SIZE:
             # 拍照當下快照
             current_vals = [float(LATEST_SENSOR_DATA[col]) for col in FEATURE_COLS]
