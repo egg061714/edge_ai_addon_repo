@@ -182,7 +182,7 @@ async def handle_sensor_data(current_vals: list, conf: dict):
         traceback.print_exc()
 
 async def periodic_inference_loop(conf: dict):
-    conf = initial_conf
+
     interval = float(conf.get("inference_interval_seconds", 5.0))
     print(f"[SYSTEM] 啟動定頻推論，週期: {interval}s", flush=True)
     while True:
