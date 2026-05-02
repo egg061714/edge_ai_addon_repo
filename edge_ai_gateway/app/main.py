@@ -20,20 +20,12 @@ MODEL_IFOREST_PATH = "/share/edge_ai_gateway/pi_model_iforest.joblib"
 MODEL_ZSCORE_PATH  = "/share/edge_ai_gateway/pi_model_zscore_params.joblib"
 CONF_PATH          = "/share/edge_ai_gateway/runtime_config.json"
 
-# 模型訓練時的原始欄位 (對應 Z-score 字典的 Key)
-TRAINED_COLS = ["temperature", "humidity", "light", "voltage"]
-# 實際部署時的感測器映射順序
-# [temp->temp, humi->humi, light->mq5, voltage->dust_ratio]
-FEATURE_COLS = ["temperature", "humidity", "mq5", "dust_ratio"]
+FEATURE_COLS = []
+TRAINED_COLS = []
+LAST_CONF_TIME = 0.0  # 用於偵測檔案變動
 WINDOW_SIZE = 10
+LATEST_SENSOR_DATA = {} # 改為動態初始化
 
-
-LATEST_SENSOR_DATA = {
-    "temperature": 25.0,
-    "humidity": 50.0,
-    "mq5": 0.0,
-    "dust_ratio": 0.0
-}
 
 STATE = {
     "buffer": deque(maxlen=WINDOW_SIZE),
@@ -51,6 +43,37 @@ models = {"iforest": None, "zscore": None}
 def load_json(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+def load_and_apply_config():
+    global FEATURE_COLS, TRAINED_COLS, LAST_CONF_TIME, LATEST_SENSOR_DATA
+    try:
+        current_time = os.path.getmtime(CONF_PATH)
+        if current_time > LAST_CONF_TIME:
+            print(f"[CONFIG] 偵測到配置檔更新，載入中...", flush=True)
+            conf = load_json(CONF_PATH)
+            
+            # 從 ai_model 區塊讀取映射 (假設你 JSON 已補上 ai_model 區段)
+            mapping = conf.get("ai_model", {}).get("feature_mapping", {})
+            if mapping:
+                # 按照 Index 排序，確保輸入模型的維度正確
+                sorted_mapping = sorted(mapping.items(), key=lambda x: x[1])
+                FEATURE_COLS = [item[0] for item in sorted_mapping]
+                # 這裡的 TRAINED_COLS 通常是模型固定的，可以視需求對應
+                TRAINED_COLS = ["temperature", "humidity", "light", "voltage"] 
+                
+                # 初始化感測器快取
+                for col in FEATURE_COLS:
+                    if col not in LATEST_SENSOR_DATA:
+                        LATEST_SENSOR_DATA[col] = 0.0
+                
+                print(f"[CONFIG] 映射更新完成: {FEATURE_COLS}", flush=True)
+                LAST_CONF_TIME = current_time
+            return conf
+    except Exception as e:
+        print(f"[CONFIG ERROR] 載入失敗: {e}", flush=True)
+    return None
+
+
 
 def load_ai_models():
     print(f"[BOOT] 載入 AI 模型中...", flush=True)
@@ -159,10 +182,13 @@ async def handle_sensor_data(current_vals: list, conf: dict):
         traceback.print_exc()
 
 async def periodic_inference_loop(conf: dict):
+    conf = initial_conf
     interval = float(conf.get("inference_interval_seconds", 5.0))
     print(f"[SYSTEM] 啟動定頻推論，週期: {interval}s", flush=True)
     while True:
         await asyncio.sleep(interval)
+        new_conf = load_and_apply_config()
+        if new_conf: conf = new_conf
         cpu_usage, ram_usage, system_ram = get_system_usage()
         print(f"[PERF] CPU: {cpu_usage}% | AI RAM: {ram_usage:.2f}MB | Sys RAM: {system_ram}%", flush=True)
         if len(STATE["buffer"]) >= WINDOW_SIZE:
