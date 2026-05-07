@@ -16,10 +16,10 @@ from aioesphomeapi import APIClient
 # =========================================
 # 1. 檔案路徑與全域設定
 # =========================================
-MODEL_IFOREST_PATH = "/share/edge_ai_gateway/pi_model_iforest.joblib"
-MODEL_ZSCORE_PATH  = "/share/edge_ai_gateway/pi_model_zscore_params.joblib"
+MODEL_IFOREST_PATH = "/share/edge_ai_gateway/pi_model_second_iforest.joblib"
+MODEL_ZSCORE_PATH  = "/share/edge_ai_gateway/pi_model_second_zscore_params.joblib"
 CONF_PATH          = "/share/edge_ai_gateway/runtime_config.json"
-
+MODEL_IF_THRESHOLD_PATH = "/share/edge_ai_gateway/pi_model_second_if_threshold.joblib"
 FEATURE_COLS = []
 TRAINED_COLS = []
 LAST_CONF_TIME = 0.0  # 用於偵測檔案變動
@@ -35,7 +35,7 @@ STATE = {
     "total_count": 0
 }
 
-models = {"iforest": None, "zscore": None}
+models = {"iforest": None, "zscore": None,"if_threshold": None}
 
 # =========================================
 # 2. 工具函式
@@ -79,6 +79,7 @@ def load_ai_models():
     print(f"[BOOT] 載入 AI 模型中...", flush=True)
     models["iforest"] = joblib.load(MODEL_IFOREST_PATH)
     models["zscore"] = joblib.load(MODEL_ZSCORE_PATH)
+    models["if_threshold"] = joblib.load(MODEL_IF_THRESHOLD_PATH)
     print(f"[BOOT] 模型載入完成！Z-score 欄位: {list(models['zscore'].keys())}", flush=True)
 
 async def get_switch_key(client: APIClient, name_contains: str) -> int:
@@ -130,22 +131,51 @@ def extract_robust_features(window_data):
     return np.concatenate([curr_val, win_mean, win_std, win_trend]).reshape(1, -1)
 
 def infer_hybrid_model_with_root_cause(current_vals, window_data):
-    # --- 1. Z-score 診斷 (映射至訓練時的 Key) ---
-    for i, trained_key in enumerate(TRAINED_COLS):
-        if trained_key in models["zscore"]:
-            params = models["zscore"][trained_key]
-            z = abs((current_vals[i] - params["mean"]) / (params["std"] + 1e-6))
-            if z > params["threshold"]:
-                return True, FEATURE_COLS[i] # 回傳現實中的感測器名稱
 
-    # --- 2. IForest 診斷 ---
+    # =====================================
+    # 1. Z-score 計算
+    # =====================================
+    z_scores = []
+
+    for i, trained_key in enumerate(TRAINED_COLS):
+
+        if trained_key not in models["zscore"]:
+            z_scores.append(0.0)
+            continue
+
+        params = models["zscore"][trained_key]
+
+        z = abs(
+            (current_vals[i] - params["mean"]) /
+            (params["std"] + 1e-6)
+        )
+
+        z_scores.append(z)
+
+    z_max = max(z_scores)
+
+    # =====================================
+    # 2. 強突波異常
+    # =====================================
+    if z_max > 4.5:
+        return True, FEATURE_COLS[np.argmax(z_scores)]
+
+    # =====================================
+    # 3. Isolation Forest score
+    # =====================================
     X_features = extract_robust_features(window_data)
-    if models["iforest"].predict(X_features)[0] == -1:
-        # 找出偏離平均最嚴重的作為根因
-        window_np = np.array(window_data)
-        deviation = np.abs(current_vals - np.mean(window_np, axis=0)) / (np.std(window_np, axis=0) + 1e-6)
-        return True, FEATURE_COLS[np.argmax(deviation)]
-        
+
+    if_score = -models["iforest"].decision_function(X_features)[0]
+
+    if_threshold = models["if_threshold"]["if_threshold"]
+
+    # =====================================
+    # 4. Drift anomaly
+    # =====================================
+    if (if_score > if_threshold) and (z_max > 2.6):
+
+        return True, FEATURE_COLS[np.argmax(z_scores)]
+
     return False, None
 
 async def handle_sensor_data(current_vals: list, conf: dict):
