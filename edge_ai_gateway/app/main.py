@@ -7,7 +7,7 @@ from typing import Optional
 from collections import deque
 import psutil
 import os
-
+import pandas as pd
 import numpy as np
 import joblib
 import paho.mqtt.client as mqtt
@@ -123,14 +123,66 @@ def get_system_usage():
 # =========================================
 # 3. 邊緣推論核心
 # =========================================
+# def extract_robust_features(window_data):
+#     """將視窗資料轉換為 16 維特徵 (4感測器 * 4統計量)"""
+#     window = np.array(window_data, dtype=np.float64)
+#     curr_val = window[-1]
+#     win_mean = np.mean(window, axis=0)
+#     win_std = np.std(window, axis=0)
+#     win_trend = window[-1] - window[0]
+#     return np.concatenate([curr_val, win_mean, win_std, win_trend]).reshape(1, -1)
+
+
+
 def extract_robust_features(window_data):
-    """將視窗資料轉換為 16 維特徵 (4感測器 * 4統計量)"""
+    """
+    與訓練端 create_robust_window_features() 對齊
+    4 感測器時輸出 30 維：
+    curr_val, win_mean, win_std, win_trend,
+    diff_mean, slopes, cum_dev, time_sin, time_cos
+    """
+
     window = np.array(window_data, dtype=np.float64)
+
     curr_val = window[-1]
     win_mean = np.mean(window, axis=0)
     win_std = np.std(window, axis=0)
     win_trend = window[-1] - window[0]
-    return np.concatenate([curr_val, win_mean, win_std, win_trend]).reshape(1, -1)
+
+    diff = np.diff(window, axis=0)
+    diff_mean = np.mean(diff, axis=0)
+
+    x = np.arange(window.shape[0])
+    slopes = []
+
+    for j in range(window.shape[1]):
+        y = window[:, j]
+        slope = np.polyfit(x, y, 1)[0]
+        slopes.append(slope)
+
+    slopes = np.array(slopes)
+
+    deviation = window - np.mean(window, axis=0)
+    cum_dev = np.sum(deviation, axis=0)
+
+    now = pd.Timestamp.now()
+    seconds_in_day = now.hour * 3600 + now.minute * 60 + now.second
+
+    time_sin = np.sin(2 * np.pi * seconds_in_day / 86400)
+    time_cos = np.cos(2 * np.pi * seconds_in_day / 86400)
+
+    combined = np.concatenate([
+        curr_val,
+        win_mean,
+        win_std,
+        win_trend,
+        diff_mean,
+        slopes,
+        cum_dev,
+        [time_sin, time_cos]
+    ])
+
+    return combined.reshape(1, -1)
 
 def infer_hybrid_model_with_root_cause(current_vals, window_data):
 
