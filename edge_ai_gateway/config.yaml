@@ -1,6 +1,6 @@
 name: Edge AI Gateway
 slug: edge_ai_gateway
-version: "3.0.0"
+version: "3.0.1"
 description: Edge AI decision service
 arch:
   - aarch64

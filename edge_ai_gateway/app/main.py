@@ -25,7 +25,9 @@ TRAINED_COLS = []
 LAST_CONF_TIME = 0.0  # 用於偵測檔案變動
 WINDOW_SIZE = 10
 LATEST_SENSOR_DATA = {} # 改為動態初始化
-
+LATEST_CONTEXT_DATA = {
+    "motion": 0.0
+}
 
 STATE = {
     "buffer": deque(maxlen=WINDOW_SIZE),
@@ -180,7 +182,6 @@ def infer_hybrid_model_with_root_cause(current_vals, window_data):
 
 async def handle_sensor_data(current_vals: list, conf: dict):
     try:
-        # 如果視窗還沒滿，不執行推論
         if len(STATE["buffer"]) < WINDOW_SIZE:
             return
 
@@ -188,24 +189,45 @@ async def handle_sensor_data(current_vals: list, conf: dict):
         is_anomaly, reason_sensor = infer_hybrid_model_with_root_cause(current_vals, STATE["buffer"])
         print(f"[AI 結果] 異常: {is_anomaly}, 根因: {reason_sensor}", flush=True)
 
-        # 防抖邏輯
+        # ==============================
+        # 第二層：Context-aware Decision
+        # motion 不進模型，只作為情境輔助
+        # ==============================
+        motion = float(LATEST_CONTEXT_DATA.get("motion", 0.0))
+
+        if is_anomaly:
+            if motion >= 1.0:
+                context_reason = "有人活動下的環境異常"
+            else:
+                context_reason = "無人狀態下的環境異常"
+        else:
+            context_reason = "正常"
+
+        print(f"[Context] motion={motion} | 情境判斷: {context_reason}", flush=True)
+
         hold = float(conf.get("hold_seconds", 5))
         now = time.time()
         in_hold = (now - STATE["last_change"]) < hold
-        
-        # 狀態決策
+
         should_alarm = is_anomaly if not STATE["alarm"] else not (not is_anomaly and not in_hold)
 
         if should_alarm != STATE["alarm"]:
-            # 根據原因選擇控制裝置
             target = "General Alarm"
-            if reason_sensor == "mq5": target = "Gas Valve"
-            elif reason_sensor in ["temperature", "humidity"]: target = "Fan Relay"
 
-            # await esphome_set_switch(conf["esphome"], target, should_alarm)
+            if reason_sensor == "mq5":
+                target = "Gas Valve"
+            elif reason_sensor in ["temperature", "humidity"]:
+                target = "Fan Relay"
+            elif reason_sensor == "pm25":
+                target = "Air Purifier"
+
             STATE["alarm"] = should_alarm
             STATE["last_change"] = now
-            print(f"[ACTION] 狀態改變為: {should_alarm} (原因: {reason_sensor})", flush=True)
+
+            print(
+                f"[ACTION] 狀態改變為: {should_alarm} | 原因: {reason_sensor} | Context: {context_reason}",
+                flush=True
+            )
 
     except Exception as e:
         print(f"[CRITICAL ERROR] handle_sensor_data 崩潰: {repr(e)}", flush=True)
@@ -259,6 +281,24 @@ def main():
             # 更新 LATEST_SENSOR_DATA 快取
             updated = []
             for k, v in payload.items():
+
+                # ==============================
+                # motion：只作為情境資料，不進模型 buffer
+                # ==============================
+                if k == "motion":
+                    if isinstance(v, bool):
+                        LATEST_CONTEXT_DATA["motion"] = 1.0 if v else 0.0
+                    elif isinstance(v, str):
+                        LATEST_CONTEXT_DATA["motion"] = 1.0 if v.upper() in ["ON", "TRUE", "1"] else 0.0
+                    else:
+                        LATEST_CONTEXT_DATA["motion"] = 1.0 if float(v) > 0 else 0.0
+
+                    updated.append(k)
+                    continue
+
+                # ==============================
+                # 模型感測資料：temperature / humidity / mq5 / pm25
+                # ==============================
                 if k in LATEST_SENSOR_DATA:
                     LATEST_SENSOR_DATA[k] = float(v)
                     updated.append(k)
