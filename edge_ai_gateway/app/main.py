@@ -16,10 +16,10 @@ from aioesphomeapi import APIClient
 # =========================================
 # 1. 檔案路徑與全域設定
 # =========================================
-MODEL_IFOREST_PATH = "/share/edge_ai_gateway/pi_model_second_iforest.joblib"
-MODEL_ZSCORE_PATH  = "/share/edge_ai_gateway/pi_model_second_zscore_params.joblib"
+MODEL_IFOREST_PATH = "/share/edge_ai_gateway/pi_model_home_new_iforest.joblib"
+MODEL_ZSCORE_PATH  = "/share/edge_ai_gateway/pi_model_home_new_zscore_params.joblib"
 CONF_PATH          = "/share/edge_ai_gateway/runtime_config.json"
-MODEL_IF_THRESHOLD_PATH = "/share/edge_ai_gateway/pi_model_second_if_threshold.joblib"
+MODEL_IF_THRESHOLD_PATH = "/share/edge_ai_gateway/pi_model_home_new_if_threshold.joblib"
 FEATURE_COLS = []
 TRAINED_COLS = []
 LAST_CONF_TIME = 0.0  # 用於偵測檔案變動
