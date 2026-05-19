@@ -20,6 +20,10 @@ MODEL_IFOREST_PATH = "/share/edge_ai_gateway/pi_model_home_new_iforest.joblib"
 MODEL_ZSCORE_PATH  = "/share/edge_ai_gateway/pi_model_home_new_zscore_params.joblib"
 CONF_PATH          = "/share/edge_ai_gateway/runtime_config.json"
 MODEL_IF_THRESHOLD_PATH = "/share/edge_ai_gateway/pi_model_home_new_if_threshold.joblib"
+
+MODEL_SCALER_PATH = "/share/edge_ai_gateway/pi_model_home_new_scaler.joblib"
+
+
 FEATURE_COLS = []
 TRAINED_COLS = []
 LAST_CONF_TIME = 0.0  # 用於偵測檔案變動
@@ -37,7 +41,7 @@ STATE = {
     "total_count": 0
 }
 
-models = {"iforest": None, "zscore": None,"if_threshold": None}
+models = {"iforest": None, "zscore": None,"if_threshold": None ,"scaler": None}
 
 # =========================================
 # 2. 工具函式
@@ -82,6 +86,7 @@ def load_ai_models():
     models["iforest"] = joblib.load(MODEL_IFOREST_PATH)
     models["zscore"] = joblib.load(MODEL_ZSCORE_PATH)
     models["if_threshold"] = joblib.load(MODEL_IF_THRESHOLD_PATH)
+    models["scaler"] = joblib.load(MODEL_SCALER_PATH)
     print(f"[BOOT] 模型載入完成！Z-score 欄位: {list(models['zscore'].keys())}", flush=True)
 
 async def get_switch_key(client: APIClient, name_contains: str) -> int:
@@ -218,8 +223,8 @@ def infer_hybrid_model_with_root_cause(current_vals, window_data):
     # 3. Isolation Forest score
     # =====================================
     X_features = extract_robust_features(window_data)
-
-    if_score = -models["iforest"].decision_function(X_features)[0]
+    X_scaled = models["scaler"].transform(X_features)
+    if_score = -models["iforest"].decision_function(X_scaled)[0]
 
     if_threshold = models["if_threshold"]["if_threshold"]
 
