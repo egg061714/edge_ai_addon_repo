@@ -42,7 +42,7 @@ STATE = {
 }
 
 models = {"iforest": None, "zscore": None,"if_threshold": None ,"scaler": None}
-
+MQTT_CLIENT = None
 # =========================================
 # 2. 工具函式
 # =========================================
@@ -285,6 +285,19 @@ async def handle_sensor_data(current_vals: list, conf: dict):
                 f"[ACTION] 狀態改變為: {should_alarm} | 原因: {reason_sensor} | Context: {context_reason}",
                 flush=True
             )
+            result = {
+            "anomaly": bool(is_anomaly),
+            "alarm": bool(should_alarm),
+            "root_cause": reason_sensor if reason_sensor else "none",
+            "context": context_reason,
+            "motion": motion,
+            "timestamp": time.time()
+            }
+
+            if MQTT_CLIENT:
+                MQTT_CLIENT.publish("edge_ai/result",json.dumps(result),retain=True)
+
+            print(f"[MQTT] 已發布 AI 結果: {result}", flush=True)
 
     except Exception as e:
         print(f"[CRITICAL ERROR] handle_sensor_data 崩潰: {repr(e)}", flush=True)
@@ -371,6 +384,11 @@ def main():
             print(f"[MQTT ERROR] {e}", flush=True)
 
     c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+    global MQTT_CLIENT
+
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+    MQTT_CLIENT = c
+
     if mqtt_conf.get("username"):
         c.username_pw_set(mqtt_conf["username"], mqtt_conf.get("password"))
     
