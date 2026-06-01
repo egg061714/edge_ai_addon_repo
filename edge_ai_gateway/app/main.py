@@ -383,9 +383,8 @@ def main():
         except Exception as e:
             print(f"[MQTT ERROR] {e}", flush=True)
 
-    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
-    global MQTT_CLIENT
 
+    global MQTT_CLIENT
     c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
     MQTT_CLIENT = c
 
