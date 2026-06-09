@@ -318,7 +318,7 @@ async def periodic_inference_loop(conf: dict):
             current_vals = [float(LATEST_SENSOR_DATA[col]) for col in FEATURE_COLS]
             await handle_sensor_data(current_vals, conf)
         else:
-            print(f"[SYSTEM] 等待資料存滿... ({len(STATE['buffer'])}/10)", flush=True)
+            print(f"[SYSTEM] 等待資料存滿... ({len(STATE['buffer'])}/60)", flush=True)
 
 # =========================================
 # 4. MQTT 與啟動
@@ -379,7 +379,7 @@ def main():
                 STATE["buffer"].append(snap)
                 STATE["total_count"] += 1
                 
-                print(f"[數據流入] 序號:#{STATE['total_count']} | 來源:{updated} | Buffer:{len(STATE['buffer'])}/10", flush=True)
+                print(f"[數據流入] 序號:#{STATE['total_count']} | 來源:{updated} | Buffer:{len(STATE['buffer'])}/60", flush=True)
         except Exception as e:
             print(f"[MQTT ERROR] {e}", flush=True)
 
