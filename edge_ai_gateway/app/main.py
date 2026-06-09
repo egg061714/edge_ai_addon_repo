@@ -27,7 +27,7 @@ MODEL_SCALER_PATH = "/share/edge_ai_gateway/pi_model_home_new_scaler.joblib"
 FEATURE_COLS = []
 TRAINED_COLS = []
 LAST_CONF_TIME = 0.0  # 用於偵測檔案變動
-WINDOW_SIZE = 10
+WINDOW_SIZE = 60
 LATEST_SENSOR_DATA = {} # 改為動態初始化
 LATEST_CONTEXT_DATA = {
     "motion": 0.0
